@@ -145,8 +145,13 @@ elif docker info; then
     if [[ "${IS_NATIVE_ARCH}" == 'no' ]]; then
         docker run --rm --privileged tonistiigi/binfmt:latest --install "${ARCH}"
     fi
+    cat <<EOF >.gitconfig
+[safe]
+  directory = /emqx
+EOF
     docker run -i --rm \
-        -v "$(pwd)":/emqx \
+        -v "$(pwd):/emqx" \
+        -v "$(pwd)/.gitconfig:/root/.gitconfig" \
         --workdir /emqx \
         --platform="linux/$ARCH" \
         --env ACLOCAL_PATH="/usr/share/aclocal:/usr/local/share/aclocal" \

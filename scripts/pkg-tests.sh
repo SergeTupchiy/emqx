@@ -46,6 +46,7 @@ export SCRIPTS="${CODE_PATH}/scripts"
 export EMQX_NAME
 export PACKAGE_PATH="${CODE_PATH}/_packages/${EMQX_NAME}"
 export RELUP_PACKAGE_PATH="${CODE_PATH}/_upgrade_base"
+export PAHO_TESTS_PATH="${CODE_PATH}/paho_tests"
 
 SYSTEM="$("$SCRIPTS"/get-distro.sh)"
 
@@ -75,8 +76,8 @@ fi
 emqx_prepare(){
     mkdir -p "${PACKAGE_PATH}"
 
-    if [ ! -d "/paho-mqtt-testing" ]; then
-        git clone -b develop-4.0 https://github.com/emqx/paho.mqtt.testing.git /paho-mqtt-testing
+    if [ ! -d "${PAHO_TESTS_PATH}" ]; then
+        git clone -b develop-4.0 https://github.com/emqx/paho.mqtt.testing.git "${PAHO_TESTS_PATH}"
     fi
     pip3 install pytest
 }
@@ -113,7 +114,7 @@ emqx_test(){
                 sleep 10
                 IDLE_TIME=$((IDLE_TIME+1))
             done
-            pytest -v /paho-mqtt-testing/interoperability/test_client/V5/test_connect.py::test_basic
+            pytest -v "${PAHO_TESTS_PATH}"/interoperability/test_client/V5/test_connect.py::test_basic
             if ! "${PACKAGE_PATH}"/emqx/bin/emqx stop; then
                 cat "${PACKAGE_PATH}"/emqx/log/erlang.log.1 || true
                 cat "${PACKAGE_PATH}"/emqx/log/emqx.log.1 || true
@@ -218,7 +219,7 @@ EOF
         sleep 10
         IDLE_TIME=$((IDLE_TIME+1))
     done
-    pytest -v /paho-mqtt-testing/interoperability/test_client/V5/test_connect.py::test_basic
+    pytest -v "${PAHO_TESTS_PATH}"/interoperability/test_client/V5/test_connect.py::test_basic
     # shellcheck disable=SC2009 # pgrep does not support Extended Regular Expressions
     ps -ef | grep -E '\-progname\s.+emqx\s'
     if ! emqx 'stop'; then
