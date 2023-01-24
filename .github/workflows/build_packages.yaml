@@ -27,6 +27,7 @@ jobs:
     outputs:
       BUILD_PROFILE: ${{ steps.get_profile.outputs.BUILD_PROFILE }}
       IS_EXACT_TAG: ${{ steps.get_profile.outputs.IS_EXACT_TAG }}
+      VERSION: ${{ steps.get_profile.outputs.VERSION }}
 
     steps:
       - uses: actions/checkout@v3
@@ -75,6 +76,7 @@ jobs:
               ;;
           esac
           echo "BUILD_PROFILE=$PROFILE" >> $GITHUB_OUTPUT
+          echo "VERSION=$(./pkg-vsn.sh $PROFILE)" >> $GITHUB_OUTPUT
       - name: get_all_deps
         run: |
           make -C source deps-all
@@ -204,13 +206,13 @@ jobs:
           - amd64
           - arm64
         os:
-          - ubuntu20.04
-          - ubuntu18.04
-          - debian11
-          - debian10
-          - el8
-          - el7
-          - amzn2
+          - ["ubuntu20.04", "ubuntu/focal", "deb"]
+          - ["ubuntu18.04", "ubuntu/bionic", "deb"]
+          - ["debian11", "debian/bullseye", "deb"]
+          - ["debian10", "debian/buster", "deb"]
+          - ["el8", "el/8", "rpm"]
+          - ["el7", "el/7", "rpm"]
+          - ["amzn2", "el/6", "rpm"]
         build_machine:
           - aws-arm64
           - ubuntu-20.04
@@ -227,7 +229,7 @@ jobs:
           - profile: emqx
             otp: 25.1.2-2
             arch: amd64
-            os: ubuntu20.04
+            os: ["ubuntu20.04", "ubuntu/focal", "deb"]
             build_machine: ubuntu-20.04
             builder: 5.0-26
             elixir: 1.13.4
@@ -235,7 +237,7 @@ jobs:
           - profile: emqx
             otp: 25.1.2-2
             arch: amd64
-            os: amzn2
+            os: ["amzn2", "el/6", "rpm"]
             build_machine: ubuntu-20.04
             builder: 5.0-26
             elixir: 1.13.4
@@ -262,7 +264,7 @@ jobs:
         OTP: ${{ matrix.otp }}
         PROFILE: ${{ matrix.profile }}
         ARCH: ${{ matrix.arch }}
-        SYSTEM: ${{ matrix.os }}
+        SYSTEM: ${{ matrix.os[0] }}
       run: |
         set -eu
         git config --global --add safe.directory "/__w/emqx/emqx"
@@ -288,11 +290,31 @@ jobs:
             --elixir "${IS_ELIXIR}" \
             --builder "ghcr.io/emqx/emqx-builder/${BUILDER}:${ELIXIR}-${OTP}-${SYSTEM}"
         done
+
     - uses: actions/upload-artifact@v3
       if: success()
       with:
         name: ${{ matrix.profile }}
         path: source/_packages/${{ matrix.profile }}/
+    - name: Push to packagecloud.io
+      if: success() && ${{ needs.prepare.outputs.IS_EXACT_TAG }}
+      working-directory: source
+      env:
+        PROFILE: ${{ matrix.profile }}
+        ARCH: ${{ matrix.arch }}
+        OS: ${{ matrix.os[0] }}
+        OS_CODENAME: ${{ matrix.os[1] }}
+        PKG_EXT: ${{ matrix.os[2] }}
+        VERSION: ${{ needs.prepare.outputs.VERSION }}
+        PACKAGECLOUD_TOKEN: ${{ secrets.PACKAGECLOUD_TOKEN }}
+      run: |
+        set -eu
+        REPO=$PROFILE
+        if [ $PROFILE = 'emqx-enterprise' ]; then
+            REPO='emqx-enterprise5'
+        docker run -t --rm -e PACKAGECLOUD_TOKEN=$PACKAGECLOUD_TOKEN \
+          ghcr.io/emqx/package_cloud push emqx/$REPO/$OS_CODENAME \
+          _packages/$PROFILE/$PROFILE-$VERSION-$OS-$ARCH.$PKG_EXT
     - name: Send notification to Slack
       uses: slackapi/slack-github-action@v1.23.0
       if: failure() && github.event_name == 'schedule'
