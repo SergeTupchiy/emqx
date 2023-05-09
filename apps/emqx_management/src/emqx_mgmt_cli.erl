@@ -42,7 +42,8 @@
     log/1,
     authz/1,
     pem_cache/1,
-    olp/1
+    olp/1,
+    data/1
 ]).
 
 -define(PROC_INFOKEYS, [
@@ -728,6 +729,36 @@ olp(_) ->
         {"olp status", "Return OLP status if system is overloaded"},
         {"olp enable", "Enable overload protection"},
         {"olp disable", "Disable overload protection"}
+    ]).
+
+%%--------------------------------------------------------------------
+%% @doc data Command
+
+data(["export"]) ->
+    case emqx_mgmt_data_backup:export() of
+        {ok, #{filename := Filename}} ->
+            emqx_ctl:print("The emqx data has been successfully exported to ~s.~n", [Filename]);
+        {error, Reason} ->
+            emqx_ctl:print("The emqx data export failed due to ~p.~n", [Reason])
+    end;
+data(["import", Filename]) ->
+    case emqx_mgmt_data_backup:import(Filename) of
+        ok ->
+            emqx_ctl:print("The emqx data has been imported successfully.~n");
+        {error, import_failed} ->
+            emqx_ctl:print("The emqx data import failed.~n");
+        {error, unsupported_version} ->
+            emqx_ctl:print("The emqx data import failed: Unsupported version.~n");
+        {error, Reason} ->
+            emqx_ctl:print(
+                "The emqx data import failed: ~0p while reading ~s.~n",
+                [Reason, Filename]
+            )
+    end;
+data(_) ->
+    emqx_ctl:usage([
+        {"data import <File>", "Import data from the specified file, possibly with overrides"},
+        {"data export", "Export data"}
     ]).
 
 %%--------------------------------------------------------------------

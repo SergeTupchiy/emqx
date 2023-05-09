@@ -72,6 +72,9 @@
 
 -boot_mnesia({mnesia, [boot]}).
 
+%% Data backup
+-backup_mnesia([?ACL_TABLE]).
+
 -spec mnesia(boot | copy) -> ok.
 mnesia(boot) ->
     ok = mria:create_table(?ACL_TABLE, [

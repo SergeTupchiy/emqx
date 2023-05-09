@@ -16,12 +16,20 @@
 
 -module(emqx_authn).
 
+%% Data backup
+-import_data(import_data).
+
 -export([
     providers/0,
     check_config/1,
     check_config/2,
     %% for telemetry information
     get_enabled_authns/0
+]).
+
+%% Data backup
+-export([
+    import_data/1
 ]).
 
 -include("emqx_authn.hrl").
@@ -126,3 +134,37 @@ get_enabled_authns() ->
 
 tally_authenticators(#{id := AuthenticatorName}, Acc) ->
     maps:update_with(AuthenticatorName, fun(N) -> N + 1 end, 1, Acc).
+
+%%------------------------------------------------------------------------------
+%% Data backup
+%%------------------------------------------------------------------------------
+
+-define(IMPORT_OPTS, #{rawconf_with_defaults => true, override_to => cluster}).
+
+import_data(RawConf) ->
+    AuthnList = maps:get(<<"authentication">>, RawConf, []),
+    lists:foreach(
+        fun(Authn) ->
+            case update_conf(update_req(Authn)) of
+                %% Assume not_found error
+                {error, _} ->
+                    {ok, _} = update_conf(create_req(Authn));
+                {ok, _} ->
+                    ok
+            end
+        end,
+        AuthnList
+    ).
+
+update_req(Authn) ->
+    {update_authenticator, ?GLOBAL, emqx_authentication:authenticator_id(Authn), Authn}.
+
+create_req(Authn) ->
+    {create_authenticator, ?GLOBAL, Authn}.
+
+update_conf(UpdateReq) ->
+    emqx_conf:update(
+        [authentication],
+        UpdateReq,
+        #{rawconf_with_defaults => true, override_to => cluster}
+    ).

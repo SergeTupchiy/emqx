@@ -63,6 +63,9 @@
 %% but for compatibility, a large number (1 years) is used here to represent the 'infinite'
 -define(EXPIRATION_TIME, 31536000).
 
+%% Data backup
+-backup_mnesia([?BANNED_TAB]).
+
 -ifdef(TEST).
 -compile(export_all).
 -compile(nowarn_export_all).

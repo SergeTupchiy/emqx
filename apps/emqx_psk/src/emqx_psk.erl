@@ -48,6 +48,11 @@
     insert_psks/1
 ]).
 
+%% Data backup
+-export([
+    import_data/1
+]).
+
 -record(psk_entry, {
     psk_id :: binary(),
     shared_secret :: binary(),
@@ -65,6 +70,10 @@
 
 -define(CR, 13).
 -define(LF, 10).
+
+%% Data backup
+-backup_mnesia([?TAB]).
+-import_data(import_data).
 
 -ifdef(TEST).
 -export([call/1, trim_crlf/1]).
@@ -115,9 +124,26 @@ start_link() ->
 stop() ->
     gen_server:stop(?MODULE).
 
-%%--------------------------------------------------------------------
+%%------------------------------------------------------------------------------
+%% Data backup
+%%------------------------------------------------------------------------------
+
+import_data(#{<<"psk_authentication">> := PskConf}) ->
+    {ok, _} = emqx_conf:update(
+        [psk_authentication],
+        PskConf,
+        #{override_to => cluster}
+    ),
+    case get_config(enable) of
+        true -> load();
+        false -> ok
+    end;
+import_data(_RawConf) ->
+    ok.
+
+%%------------------------------------------------------------------------------
 %% gen_server callbacks
-%%--------------------------------------------------------------------
+%%------------------------------------------------------------------------------
 
 init(_Opts) ->
     _ =

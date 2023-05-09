@@ -27,7 +27,8 @@
     update/4,
     delete/1,
     list/0,
-    init_bootstrap_file/0
+    init_bootstrap_file/0,
+    format/1
 ]).
 
 -export([authorize/3]).
@@ -45,6 +46,9 @@
 -endif.
 
 -define(APP, emqx_app).
+
+% Data backup
+-backup_mnesia([?APP]).
 
 -record(?APP, {
     name = <<>> :: binary() | '_',
@@ -113,6 +117,17 @@ do_delete(Name) ->
         [] -> mnesia:abort(not_found);
         [_App] -> mnesia:delete({?APP, Name})
     end.
+
+format(App = #{expired_at := ExpiredAt0, created_at := CreateAt}) ->
+    ExpiredAt =
+        case ExpiredAt0 of
+            infinity -> <<"infinity">>;
+            _ -> list_to_binary(calendar:system_time_to_rfc3339(ExpiredAt0))
+        end,
+    App#{
+        expired_at => ExpiredAt,
+        created_at => list_to_binary(calendar:system_time_to_rfc3339(CreateAt))
+    }.
 
 list() ->
     to_map(ets:match_object(?APP, #?APP{_ = '_'})).

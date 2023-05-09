@@ -69,6 +69,9 @@
     {<<"is_superuser">>, atom}
 ]).
 
+%% Data backup
+-backup_mnesia([?TAB]).
+
 -type user_group() :: binary().
 
 -export([mnesia/1]).
@@ -357,6 +360,9 @@ check_client_final_message(Bin, #{is_superuser := IsSuperuser} = Cache, #{algori
 
 add_user(UserGroup, UserID, Password, IsSuperuser, State) ->
     {StoredKey, ServerKey, Salt} = esasl_scram:generate_authentication_info(Password, State),
+    write_user(UserGroup, UserID, StoredKey, ServerKey, Salt, IsSuperuser).
+
+write_user(UserGroup, UserID, StoredKey, ServerKey, Salt, IsSuperuser) ->
     UserInfo = #user_info{
         user_id = {UserGroup, UserID},
         stored_key = StoredKey,

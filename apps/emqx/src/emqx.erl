@@ -73,7 +73,8 @@
     data_dir/0,
     etc_file/1,
     cert_file/1,
-    mutable_certs_dir/0
+    mutable_certs_dir/0,
+    cluster_hocon_file/0
 ]).
 
 -define(APP, ?MODULE).
@@ -279,3 +280,8 @@ etc_dir() ->
         true -> "etc";
         false -> Env
     end.
+
+%% @doc Returns the relative path to cluster.hocon file,
+-spec cluster_hocon_file() -> file:filename_all() | undefined.
+cluster_hocon_file() ->
+    emqx_config:cluster_hocon_file().

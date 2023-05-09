@@ -22,6 +22,9 @@
 -include_lib("emqx/include/logger.hrl").
 -include_lib("emqx/include/emqx_hooks.hrl").
 
+%% Data backup
+-import_data(import_data).
+
 -export([start_link/0]).
 
 -export([
@@ -59,6 +62,11 @@
 %% exported for `emqx_telemetry'
 -export([get_basic_usage_info/0]).
 
+%% Data backup
+-export([
+    import_data/1
+]).
+
 -type state() :: #{
     enable := boolean(),
     context_id := non_neg_integer(),
@@ -82,9 +90,9 @@
 -callback clean(context()) -> ok.
 -callback size(context()) -> non_neg_integer().
 
-%%--------------------------------------------------------------------
+%%------------------------------------------------------------------------------
 %% Hook API
-%%--------------------------------------------------------------------
+%%------------------------------------------------------------------------------
 -spec on_session_subscribed(_, _, emqx_types:subopts(), _) -> any().
 on_session_subscribed(_, _, #{share := ShareName}, _) when ShareName =/= undefined ->
     ok;
@@ -118,9 +126,9 @@ on_message_publish(Msg = #message{flags = #{retain := true}}, Context) ->
 on_message_publish(Msg, _) ->
     {ok, Msg}.
 
-%%--------------------------------------------------------------------
+%%------------------------------------------------------------------------------
 %% APIs
-%%--------------------------------------------------------------------
+%%------------------------------------------------------------------------------
 
 %% @doc Start the retainer
 -spec start_link() -> emqx_types:startlink_ret().
@@ -169,9 +177,9 @@ call(Req) ->
 stats_fun() ->
     gen_server:cast(?MODULE, ?FUNCTION_NAME).
 
-%%--------------------------------------------------------------------
+%%------------------------------------------------------------------------------
 %% APIs
-%%--------------------------------------------------------------------
+%%------------------------------------------------------------------------------
 
 -spec get_basic_usage_info() -> #{retained_messages => non_neg_integer()}.
 get_basic_usage_info() ->
@@ -183,9 +191,18 @@ get_basic_usage_info() ->
             #{retained_messages => 0}
     end.
 
-%%--------------------------------------------------------------------
+%%------------------------------------------------------------------------------
+%% Data backup (config only)
+%%------------------------------------------------------------------------------
+
+import_data(RawConf) ->
+    RetainerConf = maps:get(<<"retainer">>, RawConf, #{}),
+    {ok, _} = update_config(RetainerConf),
+    ok.
+
+%%------------------------------------------------------------------------------
 %% gen_server callbacks
-%%--------------------------------------------------------------------
+%%------------------------------------------------------------------------------
 
 init([]) ->
     erlang:process_flag(trap_exit, true),
@@ -248,9 +265,9 @@ terminate(_Reason, #{clear_timer := ClearTimer}) ->
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
-%%--------------------------------------------------------------------
+%%------------------------------------------------------------------------------
 %% Internal functions
-%%--------------------------------------------------------------------
+%%------------------------------------------------------------------------------
 -spec new_state() -> state().
 new_state() ->
     #{

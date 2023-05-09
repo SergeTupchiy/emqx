@@ -21,6 +21,9 @@
 -include_lib("emqx/include/emqx_mqtt.hrl").
 -include_lib("emqx/include/emqx_hooks.hrl").
 
+%% Data backup
+-import_data(import_data).
+
 -ifdef(TEST).
 -export([
     compile/1,
@@ -49,9 +52,14 @@
 %% exported for `emqx_telemetry'
 -export([get_basic_usage_info/0]).
 
-%%--------------------------------------------------------------------
+%% Data backup
+-export([
+    import_data/1
+]).
+
+%%------------------------------------------------------------------------------
 %% Load/Unload
-%%--------------------------------------------------------------------
+%%------------------------------------------------------------------------------
 
 enable() ->
     emqx_conf:add_handler([rewrite], ?MODULE),
@@ -109,18 +117,26 @@ rewrite_publish(Message = #message{topic = Topic}, Rules) ->
     Binds = fill_client_binds(Message),
     {ok, Message#message{topic = match_and_rewrite(Topic, Rules, Binds)}}.
 
-%%--------------------------------------------------------------------
+%%------------------------------------------------------------------------------
 %% Telemetry
-%%--------------------------------------------------------------------
+%%------------------------------------------------------------------------------
 
 -spec get_basic_usage_info() -> #{topic_rewrite_rule_count => non_neg_integer()}.
 get_basic_usage_info() ->
     RewriteRules = list(),
     #{topic_rewrite_rule_count => length(RewriteRules)}.
 
-%%--------------------------------------------------------------------
+%%------------------------------------------------------------------------------
+%% Data backup (config only)
+%%------------------------------------------------------------------------------
+
+import_data(RawConf) ->
+    update(maps:get(<<"rewrite">>, RawConf, [])).
+
+%%------------------------------------------------------------------------------
 %% Internal functions
-%%--------------------------------------------------------------------
+%%------------------------------------------------------------------------------
+
 compile(Rules) ->
     lists:foldl(
         fun(Rule, {Publish, Subscribe, Error}) ->

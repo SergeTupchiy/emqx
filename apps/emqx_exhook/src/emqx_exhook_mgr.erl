@@ -23,6 +23,9 @@
 -include_lib("emqx/include/logger.hrl").
 -include_lib("snabbkaffe/include/snabbkaffe.hrl").
 
+%% Data backup
+-import_data(import_data).
+
 %% APIs
 -export([start_link/0]).
 
@@ -63,6 +66,11 @@
 
 -export([roots/0]).
 
+%% Data backup
+-export([
+    import_data/1
+]).
+
 %% Running servers
 -type state() :: #{servers := servers()}.
 
@@ -95,9 +103,9 @@
 
 -export_type([servers/0, server/0]).
 
-%%--------------------------------------------------------------------
+%%----------------------------------------------------------------------------------------
 %% APIs
-%%--------------------------------------------------------------------
+%%----------------------------------------------------------------------------------------
 
 -spec start_link() ->
     ignore
@@ -134,7 +142,7 @@ call(Req) ->
 init_ref_counter_table() ->
     _ = ets:new(?HOOKS_REF_COUNTER, [named_table, public]).
 
-%%=====================================================================
+%%========================================================================================
 %% Hocon schema
 roots() ->
     emqx_exhook_schema:server_config().
@@ -188,11 +196,31 @@ post_config_update(_KeyPath, UpdateReq, NewConf, OldConf, _AppEnvs) ->
     try_clear_ssl_files(UpdateReq, NewConf, OldConf),
     {ok, Result}.
 
-%%=====================================================================
+%%========================================================================================
 
-%%--------------------------------------------------------------------
+%%----------------------------------------------------------------------------------------
+%% Data backup
+%%----------------------------------------------------------------------------------------
+
+import_data(#{<<"exhook">> := #{<<"servers">> := Servers}}) ->
+    Path = [exhook, servers],
+    lists:foreach(
+        fun(#{<<"name">> := Name} = Server) ->
+            case update_config(Path, {update, Name, Server}) of
+                {error, not_found} ->
+                    {ok, _} = update_config(Path, {add, Server});
+                {ok, _} ->
+                    ok
+            end
+        end,
+        Servers
+    );
+import_data(_ExhookConf) ->
+    ok.
+
+%%----------------------------------------------------------------------------------------
 %% gen_server callbacks
-%%--------------------------------------------------------------------
+%%----------------------------------------------------------------------------------------
 
 init([]) ->
     process_flag(trap_exit, true),
@@ -315,9 +343,9 @@ terminate(Reason, State = #{servers := Servers}) ->
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
-%%--------------------------------------------------------------------
+%%----------------------------------------------------------------------------------------
 %% Internal funcs
-%%--------------------------------------------------------------------
+%%----------------------------------------------------------------------------------------
 
 unload_exhooks() ->
     [
@@ -529,7 +557,7 @@ update_servers(Servers, State) ->
 set_disable(Server) ->
     Server#{status := disabled, timer := undefined}.
 
-%%--------------------------------------------------------------------
+%%----------------------------------------------------------------------------------------
 %% Server state persistent
 save(Name, ServerState) ->
     Saved = persistent_term:get(?APP, []),

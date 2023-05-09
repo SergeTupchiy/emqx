@@ -24,6 +24,9 @@
 
 -boot_mnesia({mnesia, [boot]}).
 
+%% Data backup
+-backup_mnesia([?ADMIN]).
+
 %% Mnesia bootstrap
 -export([mnesia/1]).
 

@@ -22,7 +22,9 @@
 
 -define(MAX_AUTO_SUBSCRIBE, 20).
 
-%
+%% Data backup
+-import_data(import_data).
+
 -export([load/0, unload/0]).
 
 -export([
@@ -37,6 +39,11 @@
 
 %% exported for `emqx_telemetry'
 -export([get_basic_usage_info/0]).
+
+%% Data backup
+-export([
+    import_data/1
+]).
 
 load() ->
     ok = emqx_conf:add_handler([auto_subscribe, topics], ?MODULE),
@@ -71,8 +78,9 @@ post_config_update(_KeyPath, _Req, NewTopics, _OldConf, _AppEnvs) ->
     Config = emqx_conf:get([auto_subscribe], #{}),
     update_hook(Config#{topics => NewTopics}).
 
-%%--------------------------------------------------------------------
+%%------------------------------------------------------------------------------
 %% hook
+%%------------------------------------------------------------------------------
 
 on_client_connected(ClientInfo, ConnInfo, {TopicHandler, Options}) ->
     case erlang:apply(TopicHandler, handle, [ClientInfo, ConnInfo, Options]) of
@@ -85,17 +93,28 @@ on_client_connected(ClientInfo, ConnInfo, {TopicHandler, Options}) ->
 on_client_connected(_, _, _) ->
     ok.
 
-%%--------------------------------------------------------------------
+%%------------------------------------------------------------------------------
 %% Telemetry
-%%--------------------------------------------------------------------
+%%------------------------------------------------------------------------------
 
 -spec get_basic_usage_info() -> #{auto_subscribe_count => non_neg_integer()}.
 get_basic_usage_info() ->
     AutoSubscribe = emqx_conf:get([auto_subscribe, topics], []),
     #{auto_subscribe_count => length(AutoSubscribe)}.
 
-%%--------------------------------------------------------------------
+%%------------------------------------------------------------------------------
+%% Data backup
+%%------------------------------------------------------------------------------
+
+import_data(#{<<"auto_subscribe">> := #{<<"topics">> := Topics}}) ->
+    {ok, _} = update(Topics),
+    ok;
+import_data(_RawConf) ->
+    ok.
+
+%%------------------------------------------------------------------------------
 %% internal
+%%------------------------------------------------------------------------------
 
 format(Rules) when is_list(Rules) ->
     [format(Rule) || Rule <- Rules];

@@ -27,6 +27,9 @@
 -compile(nowarn_export_all).
 -endif.
 
+%% Data backup
+-import_data(import_data).
+
 -export([
     register_metrics/0,
     init/0,
@@ -43,6 +46,11 @@
 -export([post_config_update/5, pre_config_update/3]).
 
 -export([acl_conf_file/0]).
+
+%% Data backup
+-export([
+    import_data/1
+]).
 
 -type source() :: map().
 
@@ -294,9 +302,9 @@ init_metrics(Source) ->
         [total]
     ).
 
-%%--------------------------------------------------------------------
+%%------------------------------------------------------------------------------
 %% AuthZ callbacks
-%%--------------------------------------------------------------------
+%%------------------------------------------------------------------------------
 
 %% @doc Check AuthZ
 -spec authorize(
@@ -419,9 +427,33 @@ do_authorize(
 get_enabled_authzs() ->
     lists:usort([Type || #{type := Type} <- lookup()]).
 
-%%--------------------------------------------------------------------
+%%------------------------------------------------------------------------------
+%% Data backup
+%%------------------------------------------------------------------------------
+
+import_data(#{<<"authorization">> := AuthzConf}) when map_size(AuthzConf) > 0 ->
+    {Sources, AuthzConf1} =
+        case maps:take(<<"sources">>, AuthzConf) of
+            error -> {[], AuthzConf};
+            ValAndMap -> ValAndMap
+        end,
+    {ok, _} = emqx_authz_utils:update_config([authorization], AuthzConf1),
+    lists:foreach(fun append_or_replace/1, Sources);
+import_data(_RawConf) ->
+    ok.
+
+append_or_replace(Source) ->
+    case update(?CMD_APPEND, Source) of
+        {error, {duplicated_authz_source_type, _}} ->
+            {ok, _} = update({?CMD_REPLACE, type(Source)}, Source),
+            ok;
+        {ok, _} ->
+            ok
+    end.
+
+%%------------------------------------------------------------------------------
 %% Internal function
-%%--------------------------------------------------------------------
+%%------------------------------------------------------------------------------
 
 client_info_source() ->
     emqx_authz_client_info:create(
@@ -475,6 +507,9 @@ type(<<"client_info">>) -> client_info;
 %% should never happen if the input is type-checked by hocon schema
 type(Unknown) -> throw({unknown_authz_source_type, Unknown}).
 
+%% data backup import, file must be already written
+maybe_write_files(#{<<"type">> := <<"file">>, <<"path">> := _} = Source) ->
+    Source;
 maybe_write_files(#{<<"type">> := <<"file">>} = Source) ->
     write_acl_file(Source);
 maybe_write_files(NewSource) ->

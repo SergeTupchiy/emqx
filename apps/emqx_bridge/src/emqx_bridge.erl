@@ -20,6 +20,9 @@
 -include_lib("emqx/include/emqx_hooks.hrl").
 -include_lib("snabbkaffe/include/snabbkaffe.hrl").
 
+%% Data backup
+-import_data(import_data).
+
 -export([post_config_update/5]).
 
 -export([
@@ -48,6 +51,11 @@
 
 %% exported for `emqx_telemetry'
 -export([get_basic_usage_info/0]).
+
+%% Data backup
+-export([
+    import_data/1
+]).
 
 -define(EGRESS_DIR_BRIDGES(T),
     T == webhook;
@@ -335,6 +343,23 @@ check_deps_and_remove(BridgeType, BridgeName, RemoveDeps) ->
             ),
             remove(BridgeType, BridgeName)
     end.
+
+%%----------------------------------------------------------------------------------------
+%% Data backup
+%%----------------------------------------------------------------------------------------
+
+import_data(RawConf) ->
+    BridgesConf = maps:get(<<"bridges">>, RawConf, #{}),
+    _ = maps:map(
+        fun(Type, Bridges) ->
+            maps:map(
+                fun(Name, Conf) -> {ok, _} = create(Type, Name, Conf) end,
+                Bridges
+            )
+        end,
+        BridgesConf
+    ),
+    ok.
 
 %%========================================================================================
 %% Helper functions

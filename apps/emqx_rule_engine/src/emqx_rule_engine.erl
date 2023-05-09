@@ -23,6 +23,9 @@
 -include_lib("emqx/include/logger.hrl").
 -include_lib("stdlib/include/qlc.hrl").
 
+%% Data backup
+-import_data(import_data).
+
 -export([start_link/0]).
 
 -export([
@@ -80,6 +83,11 @@
     code_change/3
 ]).
 
+%% Data backup
+-export([
+    import_data/1
+]).
+
 -define(RULE_ENGINE, ?MODULE).
 
 -define(T_CALL, infinity).
@@ -110,9 +118,10 @@ config_key_path() ->
 start_link() ->
     gen_server:start_link({local, ?RULE_ENGINE}, ?MODULE, [], []).
 
-%%------------------------------------------------------------------------------
+%%----------------------------------------------------------------------------------------
 %% The config handler for emqx_rule_engine
-%%------------------------------------------------------------------------------
+%%----------------------------------------------------------------------------------------
+
 post_config_update(_, _Req, NewRules, OldRules, _AppEnvs) ->
     #{added := Added, removed := Removed, changed := Updated} =
         emqx_utils_maps:diff_maps(NewRules, OldRules),
@@ -136,9 +145,9 @@ post_config_update(_, _Req, NewRules, OldRules, _AppEnvs) ->
     ),
     {ok, get_rules()}.
 
-%%------------------------------------------------------------------------------
+%%----------------------------------------------------------------------------------------
 %% APIs for rules
-%%------------------------------------------------------------------------------
+%%----------------------------------------------------------------------------------------
 
 -spec load_rules() -> ok.
 load_rules() ->
@@ -179,9 +188,9 @@ delete_rule(RuleId) when is_binary(RuleId) ->
 insert_rule(Rule) ->
     gen_server:call(?RULE_ENGINE, {insert_rule, Rule}, ?T_CALL).
 
-%%------------------------------------------------------------------------------
+%%----------------------------------------------------------------------------------------
 %% Rule Management
-%%------------------------------------------------------------------------------
+%%----------------------------------------------------------------------------------------
 
 -spec get_rules() -> [rule()].
 get_rules() ->
@@ -295,9 +304,9 @@ unload_hooks_for_rule(#{id := Id, from := Topics}) ->
         Topics
     ).
 
-%%------------------------------------------------------------------------------
+%%----------------------------------------------------------------------------------------
 %% Telemetry helper functions
-%%------------------------------------------------------------------------------
+%%----------------------------------------------------------------------------------------
 
 -spec get_basic_usage_info() ->
     #{
@@ -356,9 +365,46 @@ tally_referenced_bridges(BridgeIDs, Acc0) ->
         BridgeIDs
     ).
 
-%%------------------------------------------------------------------------------
+%%----------------------------------------------------------------------------------------
+%% Data backup
+%%----------------------------------------------------------------------------------------
+
+import_data(#{<<"rule_engine">> := #{<<"rules">> := Rules} = RuleEngineConf}) ->
+    _ = maps:map(
+        fun(Id, Rule) ->
+            %%            Rule1 = parse_created_at(Rule),
+            Path = config_key_path() ++ [Id],
+            {ok, _} = emqx_conf:update(Path, Rule, #{override_to => cluster})
+        end,
+        Rules
+    ),
+    ConfRoot = hd(config_key_path()),
+    _ = maps:map(
+        fun(ConfKey, ConfVal) ->
+            {ok, _} = emqx_conf:update(
+                [ConfRoot, ConfKey],
+                ConfVal,
+                #{override_to => cluster}
+            )
+        end,
+        maps:remove(<<"rules">>, RuleEngineConf)
+    ),
+    ok;
+import_data(_RawConf) ->
+    ok.
+
+%%parse_created_at(#{<<"metadata">> := #{<<"created_at">> := CreatedAt} = Meta} = Rule) ->
+%%    CreatedAt1 = calendar:rfc3339_to_system_time(
+%%        binary_to_list(CreatedAt),
+%%        [{unit, millisecond}]
+%%    ),
+%%    Rule#{<<"metadata">> => Meta#{<<"created_at">> => CreatedAt1}};
+%%parse_created_at(Rule) ->
+%%    Rule.
+
+%%----------------------------------------------------------------------------------------
 %% gen_server callbacks
-%%------------------------------------------------------------------------------
+%%----------------------------------------------------------------------------------------
 
 init([]) ->
     _TableId = ets:new(?KV_TAB, [
@@ -398,9 +444,9 @@ terminate(_Reason, _State) ->
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
-%%------------------------------------------------------------------------------
+%%----------------------------------------------------------------------------------------
 %% Internal Functions
-%%------------------------------------------------------------------------------
+%%----------------------------------------------------------------------------------------
 
 parse_and_insert(Params = #{id := RuleId, sql := Sql, actions := Actions}, CreatedAt) ->
     case emqx_rule_sqlparser:parse(Sql) of

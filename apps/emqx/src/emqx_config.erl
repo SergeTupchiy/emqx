@@ -90,6 +90,11 @@
 
 -export([ensure_atom_conf_path/2]).
 
+%% Used in data backup
+-export([
+    cluster_hocon_file/0
+]).
+
 -ifdef(TEST).
 -export([erase_all/0]).
 -endif.

@@ -19,6 +19,9 @@
 
 -behaviour(emqx_config_handler).
 
+%% Data backup
+-import_data(import_data).
+
 %% Load/Unload
 -export([
     load/0,
@@ -64,6 +67,11 @@
     post_config_update/5
 ]).
 
+%% Data backup
+-export([
+    import_data/1
+]).
+
 -include_lib("emqx/include/logger.hrl").
 -include_lib("emqx/include/emqx_authentication.hrl").
 -define(AUTHN_BIN, ?EMQX_AUTHENTICATION_CONFIG_ROOT_NAME_BINARY).
@@ -75,9 +83,9 @@
 
 -define(IS_SSL(T), (T == <<"ssl_options">> orelse T == <<"dtls_options">>)).
 
-%%--------------------------------------------------------------------
+%%----------------------------------------------------------------------------------------
 %%  Load/Unload
-%%--------------------------------------------------------------------
+%%----------------------------------------------------------------------------------------
 
 -spec load() -> ok.
 load() ->
@@ -87,7 +95,7 @@ load() ->
 unload() ->
     emqx_conf:remove_handler([gateway]).
 
-%%--------------------------------------------------------------------
+%%----------------------------------------------------------------------------------------
 %% APIs
 
 -spec load_gateway(atom_or_bin(), map()) -> map_or_err().
@@ -363,9 +371,78 @@ ret_listener_or_err(GwName, {LType, LName}, {ok, #{raw_config := GwConf}}) ->
 ret_listener_or_err(_, _, Err) ->
     Err.
 
-%%--------------------------------------------------------------------
+%%----------------------------------------------------------------------------------------
+%% Data backup
+%%----------------------------------------------------------------------------------------
+
+import_data(RawConf) ->
+    GatewayConf = maps:get(<<"gateway">>, RawConf, #{}),
+    _ = maps:map(
+        fun(GwName, GwConf) ->
+            GwConf1 = maps:without([<<"listeners">>, ?AUTHN_BIN], GwConf),
+            ok = update_or_add(update_gateway, load_gateway, GwName, GwConf1),
+            ok = maybe_import_authn(GwName, GwConf),
+            ok = import_listeners(GwName, GwConf)
+        end,
+        GatewayConf
+    ),
+    ok.
+
+maybe_import_authn(GwName, #{?AUTHN_BIN := Authn}) when is_map(Authn) ->
+    update_or_add(update_authn, add_authn, GwName, Authn);
+maybe_import_authn(_GwName, _GwConf) ->
+    ok.
+
+import_listeners(GwName, #{<<"listeners">> := Listeners}) when is_map(Listeners) ->
+    _ = maps:map(
+        fun(LType, ListenersByType) ->
+            maps:map(
+                fun(LName, Listener) ->
+                    Listener1 = maps:remove(?AUTHN_BIN, Listener),
+                    ListenerRef = {LType, LName},
+                    ok = update_or_add(
+                        update_listener, add_listener, GwName, ListenerRef, Listener1
+                    ),
+                    ok = maybe_import_listener_authn(GwName, ListenerRef, Listener)
+                end,
+                ListenersByType
+            )
+        end,
+        Listeners
+    ),
+    ok;
+import_listeners(_GwName, _GwConf) ->
+    ok.
+
+maybe_import_listener_authn(GwName, ListenerRef, #{?AUTHN_BIN := Authn}) ->
+    update_or_add(update_authn, add_authn, GwName, ListenerRef, Authn);
+maybe_import_listener_authn(_GwName, _ListenerRef, _ListenerConf) ->
+    ok.
+
+update_or_add(UpdAction, AddAction, GwName, Conf) ->
+    update_or_add(
+        {UpdAction, GwName, Conf},
+        {AddAction, GwName, Conf}
+    ).
+
+update_or_add(UpdAction, AddAction, GwName, ListenerRef, Conf) ->
+    update_or_add(
+        {UpdAction, GwName, ListenerRef, Conf},
+        {AddAction, GwName, ListenerRef, Conf}
+    ).
+
+update_or_add(UpdReq, AddReq) ->
+    case update(UpdReq) of
+        {error, {badres, #{reason := not_found}}} ->
+            {ok, _} = update(AddReq),
+            ok;
+        {ok, _} ->
+            ok
+    end.
+
+%%----------------------------------------------------------------------------------------
 %% Config Handler
-%%--------------------------------------------------------------------
+%%----------------------------------------------------------------------------------------
 
 -spec pre_config_update(
     list(atom()),
@@ -660,9 +737,9 @@ post_config_update(_, Req, NewConfig, OldConfig, _AppEnvs) when is_tuple(Req) ->
 post_config_update(_, _Req, _NewConfig, _OldConfig, _AppEnvs) ->
     ok.
 
-%%--------------------------------------------------------------------
+%%----------------------------------------------------------------------------------------
 %% Internal funcs
-%%--------------------------------------------------------------------
+%%----------------------------------------------------------------------------------------
 
 tune_gw_certs(Fun, GwName, Conf) ->
     apply_to_gateway_basic_confs(

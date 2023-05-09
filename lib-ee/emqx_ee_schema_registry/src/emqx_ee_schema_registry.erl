@@ -10,6 +10,9 @@
 -include_lib("emqx/include/logger.hrl").
 -include_lib("snabbkaffe/include/snabbkaffe.hrl").
 
+%% Data backup
+-import_data(import_data).
+
 %% API
 -export([
     start_link/0,
@@ -33,6 +36,11 @@
 
 %% `emqx_config_handler' API
 -export([post_config_update/5]).
+
+%% Data backup
+-export([
+    import_data/1
+]).
 
 -type schema() :: #{
     type := serde_type(),
@@ -136,6 +144,19 @@ post_config_update(
     end;
 post_config_update(_Path, _Cmd, NewConf, _OldConf, _AppEnvs) ->
     {ok, NewConf}.
+
+%%-------------------------------------------------------------------------------------------------
+%% Data backup
+%%-------------------------------------------------------------------------------------------------
+
+import_data(#{<<"schema_registry">> := #{<<"schemas">> := Schemas}}) ->
+    _ = maps:map(
+        fun(Name, Schema) -> ok = add_schema(Name, Schema) end,
+        Schemas
+    ),
+    ok;
+import_data(_RawConf) ->
+    ok.
 
 %%-------------------------------------------------------------------------------------------------
 %% `gen_server' API

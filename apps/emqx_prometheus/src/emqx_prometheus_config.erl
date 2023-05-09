@@ -23,6 +23,14 @@
 -export([post_config_update/5]).
 -export([update/1]).
 
+%% Data backup
+-import_data(import_data).
+
+%% Data backup
+-export([
+    import_data/1
+]).
+
 update(Config) ->
     case
         emqx_conf:update(
@@ -55,3 +63,11 @@ update_prometheus(#{enable := true}) ->
     emqx_prometheus_sup:start_child(?APP);
 update_prometheus(#{enable := false}) ->
     emqx_prometheus_sup:stop_child(?APP).
+
+%%----------------------------------------------------------------------------------------
+%% Data backup (config only)
+%%----------------------------------------------------------------------------------------
+
+import_data(RawConf) ->
+    {ok, _} = update(maps:get(<<"prometheus">>, RawConf, #{})),
+    ok.
