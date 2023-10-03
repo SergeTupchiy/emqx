@@ -59,4 +59,14 @@ init([]) ->
         modules => [emqx_broker_helper]
     },
 
-    {ok, {{one_for_all, 0, 1}, [BrokerPool, SharedSub, Helper]}}.
+    DispatcherPool = emqx_pool_sup:spec(
+        dispatcher_sup,
+        [
+            dispatcher_pool,
+            hash,
+            emqx_vm:schedulers() * 2,
+            {emqx_pool, start_link, []}
+        ]
+    ),
+
+    {ok, {{one_for_all, 0, 1}, [DispatcherPool, BrokerPool, SharedSub, Helper]}}.

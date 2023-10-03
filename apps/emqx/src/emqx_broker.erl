@@ -158,16 +158,18 @@ do_subscribe(Topic, SubPid, SubOpts) ->
     do_subscribe(Group, Topic, SubPid, SubOpts).
 
 do_subscribe(undefined, Topic, SubPid, SubOpts) ->
-    case emqx_broker_helper:get_sub_shard(SubPid, Topic) of
-        0 ->
-            true = ets:insert(?SUBSCRIBER, {Topic, SubPid}),
-            true = ets:insert(?SUBOPTION, {{Topic, SubPid}, SubOpts}),
-            call(pick(Topic), {subscribe, Topic});
-        I ->
-            true = ets:insert(?SUBSCRIBER, {{shard, Topic, I}, SubPid}),
-            true = ets:insert(?SUBOPTION, {{Topic, SubPid}, maps:put(shard, I, SubOpts)}),
-            call(pick({Topic, I}), {subscribe, Topic, I})
-    end;
+    %%    case emqx_broker_helper:get_sub_shard(SubPid, Topic) of
+    %%        0 ->
+    %%            true = ets:insert(?SUBSCRIBER, {Topic, SubPid}),
+    %%            true = ets:insert(?SUBOPTION, {{Topic, SubPid}, SubOpts}),
+    %%            call(pick(Topic), {subscribe, Topic});
+    %%        I ->
+    I = emqx_broker_helper:get_sub_shard(SubPid, Topic),
+    true = ets:insert(?SUBSCRIBER, {{shard, Topic, I}, SubPid}),
+    true = ets:insert(?SUBOPTION, {{Topic, SubPid}, maps:put(shard, I, SubOpts)}),
+    call(pick({Topic, I}), {subscribe, Topic, I});
+%%    end
+
 %% Shared subscription
 do_subscribe(Group, Topic, SubPid, SubOpts) ->
     true = ets:insert(?SUBOPTION, {{Topic, SubPid}, SubOpts}),
@@ -569,6 +571,18 @@ do_dispatch(SubPid, Topic, Msg) when is_pid(SubPid) ->
             0
     end;
 do_dispatch({shard, I}, Topic, Msg) ->
+    case persistent_term:get({?MODULE, offload_dispatch}, false) of
+        true ->
+            emqx_pool:async_submit(dispatcher_pool, {Topic, I}, fun dispatch_shard/3, [
+                Topic, I, Msg
+            ]),
+            %%
+            0;
+        false ->
+            dispatch_shard(Topic, I, Msg)
+    end.
+
+dispatch_shard(Topic, I, Msg) ->
     lists:foldl(
         fun(SubPid, N) ->
             N + do_dispatch(SubPid, Topic, Msg)

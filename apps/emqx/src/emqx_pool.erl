@@ -28,7 +28,9 @@
     submit/1,
     submit/2,
     async_submit/1,
-    async_submit/2
+    async_submit/2,
+    async_submit/3,
+    async_submit/4
 ]).
 
 -ifdef(TEST).
@@ -57,7 +59,7 @@
 -spec start_link(atom(), pos_integer()) -> startlink_ret().
 start_link(Pool, Id) ->
     gen_server:start_link(
-        {local, emqx_utils:proc_name(?MODULE, Id)},
+        %%        {local, emqx_utils:proc_name(?MODULE, Id)},
         ?MODULE,
         [Pool, Id],
         [{hibernate_after, 1000}]
@@ -81,13 +83,24 @@ call(Req) ->
 async_submit(Task) ->
     cast({async_submit, Task}).
 
+-spec async_submit(atom(), any(), task()) -> ok.
+async_submit(Pool, N, Task) ->
+    cast(Pool, N, {async_submit, Task}).
+
 -spec async_submit(fun(), list(any())) -> ok.
 async_submit(Fun, Args) ->
     cast({async_submit, {Fun, Args}}).
 
+-spec async_submit(atom(), any(), fun(), list(any())) -> ok.
+async_submit(Pool, N, Fun, Args) ->
+    cast(Pool, N, {async_submit, {Fun, Args}}).
+
 %% @private
 cast(Msg) ->
     gen_server:cast(worker(), Msg).
+
+cast(Pool, N, Msg) ->
+    gen_server:cast(gproc_pool:pick_worker(Pool, N), Msg).
 
 %% @private
 worker() ->
