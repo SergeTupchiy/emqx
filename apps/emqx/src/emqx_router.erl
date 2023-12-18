@@ -95,6 +95,8 @@
     unused = [] :: nil()
 }).
 
+-define(node_patterns(_Node_), [_Node_, {'_', _Node_}]).
+
 %%--------------------------------------------------------------------
 %% Mnesia bootstrap
 %%--------------------------------------------------------------------
@@ -298,8 +300,6 @@ pick(Topic) ->
 %% Schema v1
 %% --------------------------------------------------------------------
 
--dialyzer({nowarn_function, [cleanup_routes_v1/1]}).
-
 mria_insert_route_v1(Topic, Dest) ->
     Route = #route{topic = Topic, dest = Dest},
     case emqx_topic:wildcard(Topic) of
@@ -360,18 +360,14 @@ has_route_v1(Topic, Dest) ->
 has_route_tab_entry(Topic, Dest) ->
     [] =/= ets:match(?ROUTE_TAB, #route{topic = Topic, dest = Dest}).
 
+-dialyzer({nowarn_function, cleanup_routes_v1/1}).
 cleanup_routes_v1(Node) ->
-    Patterns = [
-        #route{_ = '_', dest = Node},
-        #route{_ = '_', dest = {'_', Node}}
-    ],
-    mria:transaction(?ROUTE_SHARD, fun() ->
-        [
-            mnesia:delete_object(?ROUTE_TAB, Route, write)
-         || Pat <- Patterns,
-            Route <- mnesia:match_object(?ROUTE_TAB, Pat, write)
-        ]
-    end).
+    lists:foreach(
+        fun(Pattern) ->
+            _ = mria:match_delete(?ROUTE_TAB, make_route_rec_pat(Pattern))
+        end,
+        ?node_patterns(Node)
+    ).
 
 select_v1({MTopic, MDest}, Limit, undefined) ->
     ets:match_object(?ROUTE_TAB, #route{topic = MTopic, dest = MDest}, Limit);
@@ -439,38 +435,28 @@ has_route_v2(Topic, Dest) ->
             has_route_tab_entry(Topic, Dest)
     end.
 
+%% Record match pattern 'violates' type spec, e.g. #route{topic::'_'},
+%% while topic::binary()
+-dialyzer({nowarn_function, cleanup_routes_v2/1}).
 cleanup_routes_v2(Node) ->
-    % NOTE
-    % No point in transaction here because all the operations on filters table are dirty.
-    ok = ets:foldl(
-        fun(#routeidx{entry = K}, ok) ->
-            case get_dest_node(emqx_topic_index:get_id(K)) of
-                Node ->
-                    mria:dirty_delete(?ROUTE_TAB_FILTERS, K);
-                _ ->
-                    ok
-            end
+    lists:foreach(
+        fun(Pattern) ->
+            _ = mria:match_delete(
+                ?ROUTE_TAB_FILTERS,
+                #routeidx{entry = emqx_trie_search:make_pat('_', Pattern)}
+            ),
+            _ = mria:match_delete(?ROUTE_TAB, make_route_rec_pat(Pattern))
         end,
-        ok,
-        ?ROUTE_TAB_FILTERS
-    ),
-    ok = ets:foldl(
-        fun(#route{dest = Dest} = Route, ok) ->
-            case get_dest_node(Dest) of
-                Node ->
-                    mria:dirty_delete_object(?ROUTE_TAB, Route);
-                _ ->
-                    ok
-            end
-        end,
-        ok,
-        ?ROUTE_TAB
+        ?node_patterns(Node)
     ).
 
-get_dest_node({_, Node}) ->
-    Node;
-get_dest_node(Node) ->
-    Node.
+%% Make Dialyzer happy
+make_route_rec_pat(DestPattern) ->
+    erlang:make_tuple(
+        record_info(size, route),
+        '_',
+        [{1, route}, {#route.dest, DestPattern}]
+    ).
 
 select_v2(Spec, Limit, undefined) ->
     Stream = mk_route_stream(Spec),
