@@ -85,6 +85,9 @@
 %% Guards
 -define(IS_SUBID(Id), (is_binary(Id) orelse is_atom(Id))).
 
+-define(LAZY_CLEANUP_INTERVAL, 1000).
+-define(LAZY_CLEANUP_BATCH_SIZE, 100).
+
 -spec start_link(atom(), pos_integer()) -> startlink_ret().
 start_link(Pool, Id) ->
     ok = create_tabs(),
@@ -497,11 +500,33 @@ pick(Topic) ->
 
 init([Pool, Id]) ->
     true = gproc_pool:connect_worker(Pool, {Pool, Id}),
-    {ok, #{pool => Pool, id => Id}}.
+    erlang:send_after(?LAZY_CLEANUP_INTERVAL, self(), lazy_cleanup),
+    State = reinit_lazy_state(#{
+        pool => Pool,
+        id => Id,
+        lazy_cleanup_tab => new_lazy_tab()
+    }),
+    {ok, State}.
 
-handle_call({subscribe, Topic}, _From, State) ->
-    Ok = emqx_router:do_add_route(Topic),
-    {reply, Ok, State};
+handle_call(
+    {subscribe, Topic},
+    From,
+    #{
+        lazy_cleanup_tab := Tab,
+        lazy_current_batch := LazyTopics
+    } = State
+) ->
+    %% TODO: no need to call it if lazy cleanup is disabled
+    _ = ets:delete(Tab, Topic),
+    %% TODO: use maps/sets ?
+    case lists:member(Topic, LazyTopics) of
+        true ->
+            #{lazy_waiters := Waiters} = State,
+            {noreply, State#{lazy_waiters => [{From, Topic} | Waiters]}};
+        false ->
+            Ok = emqx_router:do_add_route(Topic),
+            {reply, Ok, State}
+    end;
 handle_call({subscribe, Topic, I}, _From, State) ->
     Shard = {Topic, I},
     Ok =
@@ -518,6 +543,7 @@ handle_call(Req, _From, State) ->
     ?SLOG(error, #{msg => "unexpected_call", call => Req}),
     {reply, ignored, State}.
 
+%% TODO check it (lazy cleanup)
 handle_cast({subscribe, Topic}, State) ->
     case emqx_router:do_add_route(Topic) of
         ok -> ok;
@@ -525,13 +551,7 @@ handle_cast({subscribe, Topic}, State) ->
     end,
     {noreply, State};
 handle_cast({unsubscribed, Topic}, State) ->
-    case ets:member(?SUBSCRIBER, Topic) of
-        false ->
-            _ = emqx_router:do_delete_route(Topic),
-            ok;
-        true ->
-            ok
-    end,
+    _ = maybe_delete_route(Topic, State),
     {noreply, State};
 handle_cast({unsubscribed, Topic, I}, State) ->
     case ets:member(?SUBSCRIBER, {shard, Topic, I}) of
@@ -547,6 +567,36 @@ handle_cast(Msg, State) ->
     ?SLOG(error, #{msg => "unexpected_cast", cast => Msg}),
     {noreply, State}.
 
+handle_info(
+    {'DOWN', Ref, process, Pid, Reason},
+    #{lazy_cleanup_ref := Ref, lazy_cleanup_pid := Pid} = State
+) ->
+    case Reason of
+        normal ->
+            ok;
+        _ ->
+            ?SLOG(error, #{
+                msg => "lazy_cleanup_proc_error",
+                reason => Reason,
+                pid => Pid
+            })
+    end,
+    %% TODO: what if it runns to long or even forever? Maybe kill it after some timeout?
+    maybe_notify_lazy_waiters(State),
+    %% TODO: maybe no need to wait for another interval and start next batch right after?
+    %% However, doing it in a loop may still overload/slow down routes core->replicant replication.
+    erlang:send_after(?LAZY_CLEANUP_INTERVAL, self(), lazy_cleanup),
+    {noreply, reinit_lazy_state(State)};
+handle_info(lazy_cleanup, #{lazy_cleanup_ref := Ref} = State) when is_reference(Ref) ->
+    {noreply, State};
+handle_info(lazy_cleanup, #{lazy_cleanup_tab := Tab} = State) ->
+    State1 =
+        case ets:info(Tab, size) > 0 of
+            true -> delete_lazy_batch(Tab, ?LAZY_CLEANUP_BATCH_SIZE, State);
+            false -> State
+        end,
+    erlang:send_after(?LAZY_CLEANUP_INTERVAL, self(), lazy_cleanup),
+    {noreply, State1};
 handle_info(Info, State) ->
     ?SLOG(error, #{msg => "unexpected_info", info => Info}),
     {noreply, State}.
@@ -560,6 +610,68 @@ code_change(_OldVsn, State, _Extra) ->
 %%--------------------------------------------------------------------
 %% Internal functions
 %%--------------------------------------------------------------------
+
+maybe_notify_lazy_waiters(#{lazy_waiters := []}) ->
+    ok;
+maybe_notify_lazy_waiters(#{lazy_waiters := Waiters}) ->
+    lists:foreach(
+        fun({From, Topic}) ->
+            gen_server:reply(From, emqx_router:do_add_route(Topic))
+        end,
+        lists:reverse(Waiters)
+    ).
+
+reinit_lazy_state(State) ->
+    State#{
+        lazy_cleanup_ref => undefined,
+        lazy_cleanup_pid => undefined,
+        lazy_current_batch => [],
+        lazy_waiters => []
+    }.
+
+maybe_delete_route(Topic, State) ->
+    case ets:member(?SUBSCRIBER, Topic) of
+        false ->
+            maybe_lazy_delete(Topic, State);
+        true ->
+            ok
+    end.
+
+maybe_lazy_delete(Topic, State) ->
+    case is_lazy_route_cleanup() of
+        true ->
+            #{lazy_cleanup_tab := Tab} = State,
+            ets:insert(Tab, {Topic});
+        false ->
+            emqx_router:do_delete_route(Topic)
+    end,
+    ok.
+
+delete_lazy_batch(Tab, BatchSize, State) ->
+    Topics = take_batch(Tab, BatchSize),
+    {Pid, Ref} = spawn_monitor(emqx_router, do_delete_routes, [Topics]),
+    State#{
+        lazy_cleanup_ref => Ref,
+        lazy_cleanup_pid => Pid,
+        lazy_current_batch => Topics
+    }.
+
+take_batch(Tab, Size) ->
+    case ets:select(Tab, [{{'$1'}, [], ['$1']}], Size) of
+        {Keys, _} ->
+            lists:foreach(fun(K) -> ets:delete(Tab, K) end, Keys),
+            Keys;
+        '$end_of_table' ->
+            []
+    end.
+
+new_lazy_tab() ->
+    ets:new(emqx_route_lazy_cleanup, []).
+
+is_lazy_route_cleanup() ->
+    %% TODO: read config param or remove it completely,
+    %% if we want to always cleanup routes lazily.
+    true.
 
 -spec do_dispatch(emqx_types:topic() | emqx_types:share(), emqx_types:delivery()) ->
     emqx_types:deliver_result().

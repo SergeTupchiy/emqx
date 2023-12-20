@@ -42,7 +42,13 @@
     delete_route/1,
     delete_route/2,
     do_delete_route/1,
-    do_delete_route/2
+    do_delete_route/2,
+    do_delete_routes/1
+]).
+
+%% Internal exports (RPC)
+-export([
+    mria_delete_routes_v2/2
 ]).
 
 -export([cleanup_routes/1]).
@@ -218,14 +224,32 @@ delete_route(Topic, Dest) when is_binary(Topic) ->
 do_delete_route(Topic) when is_binary(Topic) ->
     do_delete_route(Topic, node()).
 
+do_delete_routes(Topics) when is_list(Topics) ->
+    do_delete_routes(Topics, node()).
+
 -spec do_delete_route(emqx_types:topic(), dest()) -> ok | {error, term()}.
 do_delete_route(Topic, Dest) ->
     mria_delete_route(get_schema_vsn(), Topic, Dest).
+
+do_delete_routes(Topics, Dest) ->
+    mria_delete_routes(get_schema_vsn(), Topics, Dest).
 
 mria_delete_route(v2, Topic, Dest) ->
     mria_delete_route_v2(Topic, Dest);
 mria_delete_route(v1, Topic, Dest) ->
     mria_delete_route_v1(Topic, Dest).
+
+mria_delete_routes(v2, Topics, Dest) ->
+    %% sync_dirty must give good enough consistency guarantees
+    %% for the current use case: lazy cleanup by a process
+    %% spawned from emqx_broker worker.
+    mria:sync_dirty(
+        ?ROUTE_SHARD,
+        fun ?MODULE:mria_delete_routes_v2/2,
+        [Topics, Dest]
+    );
+mria_delete_routes(v1, Topics, Dest) ->
+    mria_delete_routes_v1(Topics, Dest).
 
 -spec select(Spec, _Limit :: pos_integer(), Continuation) ->
     {[emqx_types:route()], Continuation} | '$end_of_table'
@@ -328,6 +352,15 @@ mria_delete_route_v1(Topic, Dest) ->
             mria_route_tab_delete(Route)
     end.
 
+mria_delete_routes_v1(Topics, Dest) ->
+    %% TODO: this is a temp prototype, if it's going to be used,
+    %% split Topics into wildcards (one maybe_trans)
+    %% and not-wildcards (one dirty activity)
+    lists:foreach(
+        fun(Topic) -> mria_delete_route_v1(Topic, Dest) end,
+        Topics
+    ).
+
 mria_route_tab_delete_update_trie(Route) ->
     emqx_router_utils:maybe_trans(
         fun emqx_router_utils:delete_trie_route/2,
@@ -410,6 +443,12 @@ mria_delete_route_v2(Topic, Dest) ->
         false ->
             mria_route_tab_delete(#route{topic = Topic, dest = Dest})
     end.
+
+mria_delete_routes_v2(Topics, Dest) ->
+    lists:foreach(
+        fun(Topic) -> mria_delete_route_v2(Topic, Dest) end,
+        Topics
+    ).
 
 match_routes_v2(Topic) ->
     lookup_route_tab(Topic) ++
