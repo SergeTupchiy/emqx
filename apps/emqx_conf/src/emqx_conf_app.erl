@@ -156,9 +156,16 @@ sync_cluster_conf2(Nodes) ->
     MyRole = mria_rlog:role(),
     case Ready of
         [] when MyRole =:= replicant ->
+            ?SLOG(error, #{msg => "no_ready_nodes", role => replicant}),
             %% replicant should never boot without copying from a core node
             delay_and_retry(LogData#{role => replicant});
         [] ->
+            ?SLOG(error, #{
+                msg => "no_ready_nodes",
+                nodes => Nodes,
+                connected_nodes => nodes(),
+                self_node => node()
+            }),
             %% none of the nodes are ready, either delay-and-retry or boot without wait
             TableStatus = tx_commit_table_status(),
             sync_cluster_conf5(TableStatus, LogData);
@@ -302,9 +309,14 @@ sync_data_from_node(Node) ->
         {ok, DataBin} ->
             case zip:unzip(DataBin, [{cwd, emqx:data_dir()}]) of
                 {ok, []} ->
-                    ?SLOG(debug, #{node => Node, msg => "sync_data_from_node_empty_response"});
+                    ?SLOG(error, #{
+                        self_node => node(),
+                        node => Node,
+                        msg => "sync_data_from_node_empty_response"
+                    });
                 {ok, Files} ->
-                    ?SLOG(debug, #{
+                    ?SLOG(error, #{
+                        self_node => node(),
                         node => Node,
                         msg => "sync_data_from_node_non_empty_response",
                         files => Files
