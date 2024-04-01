@@ -73,7 +73,7 @@
     (?CE_AUTHN_PROVIDER_SCHEMA_MODS ++ ?EE_AUTHN_PROVIDER_SCHEMA_MODS)
 ).
 
--define(OTHER_INJECTING_CONFIGS, []).
+-define(OTHER_INJECTING_CONFIGS, [emqx_cluster_link_schema]).
 
 -else.
 
