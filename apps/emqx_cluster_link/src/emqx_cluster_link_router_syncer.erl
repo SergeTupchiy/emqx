@@ -5,6 +5,7 @@
 
 -include_lib("emqtt/include/emqtt.hrl").
 -include_lib("emqx/include/logger.hrl").
+-include_lib("snabbkaffe/include/trace.hrl").
 -include("emqx_cluster_link.hrl").
 
 %% API
@@ -53,6 +54,7 @@
 
 -define(RECONNECT_TIMEOUT, 5_000).
 -define(ACTOR_REINIT_TIMEOUT, 7000).
+-define(HEARTBEAT_INTERVAL, 10_000).
 
 -define(CLIENT_SUFFIX, ":routesync:").
 -define(PS_CLIENT_SUFFIX, ":routesync-ps:").
@@ -180,6 +182,10 @@ publish_routes(ClientPid, Actor, Incarnation, Updates) ->
         #{}
     ).
 
+publish_heartbeat(ClientPid, Actor, Incarnation) ->
+    %% NOTE: Fully asynchronous, no need for error handling.
+    emqx_cluster_link_mqtt:publish_heartbeat(ClientPid, Actor, Incarnation).
+
 %% Route syncer
 
 start_syncer(TargetCluster, Actor, Incr) ->
@@ -221,7 +227,12 @@ process_syncer_batch(Batch, ClientName, Actor, Incarnation) ->
         [],
         Batch
     ),
-    publish_routes(gproc:where(ClientName), Actor, Incarnation, Updates).
+    Result = publish_routes(gproc:where(ClientName), Actor, Incarnation, Updates),
+    ?tp(debug, clink_route_sync_complete, #{
+        actor => {Actor, Incarnation},
+        batch => Batch
+    }),
+    Result.
 
 batch_get_opname(Op) ->
     element(1, Op).
@@ -236,10 +247,10 @@ init({sup, TargetCluster}) ->
         intensity => 10,
         period => 60
     },
-    Children = [
-        child_spec(actor, TargetCluster),
-        child_spec(ps_actor, TargetCluster)
-    ],
+    Children = lists:append([
+        [child_spec(actor, TargetCluster)],
+        [child_spec(ps_actor, TargetCluster) || emqx_persistent_message:is_persistence_enabled()]
+    ]),
     {ok, {SupFlags, Children}};
 init({actor, State}) ->
     init_actor(State).
@@ -294,6 +305,7 @@ syncer_spec(ChildID, Actor, Incarnation, SyncerRef, ClientName) ->
     client :: {pid(), reference()},
     bootstrapped :: boolean(),
     reconnect_timer :: reference(),
+    heartbeat_timer :: reference(),
     actor_init_req_id :: binary(),
     actor_init_timer :: reference(),
     remote_actor_info :: undefined | map(),
@@ -366,6 +378,8 @@ handle_info({timeout, TRef, actor_reinit}, St = #st{actor_init_timer = TRef}) ->
     _ = maybe_alarm(Reason, St),
     {noreply,
         init_remote_actor(St#st{reconnect_timer = undefined, status = disconnected, error = Reason})};
+handle_info({timeout, TRef, _Heartbeat}, St = #st{heartbeat_timer = TRef}) ->
+    {noreply, process_heartbeat(St#st{heartbeat_timer = undefined})};
 %% Stale timeout.
 handle_info({timeout, _, _}, St) ->
     {noreply, St};
@@ -381,8 +395,6 @@ process_connect(St = #st{target = TargetCluster, actor = Actor}) ->
         {ok, ClientPid} ->
             _ = maybe_deactivate_alarm(St),
             ok = announce_client(Actor, TargetCluster, ClientPid),
-            %% TODO: handle subscribe errors
-            {ok, _, _} = emqtt:subscribe(ClientPid, ?RESP_TOPIC(Actor), ?QOS_1),
             init_remote_actor(St#st{client = ClientPid});
         {error, Reason} ->
             handle_connect_error(Reason, St)
@@ -392,6 +404,8 @@ init_remote_actor(
     St = #st{target = TargetCluster, client = ClientPid, actor = Actor, incarnation = Incr}
 ) ->
     ReqId = emqx_utils_conv:bin(emqx_utils:gen_id(16)),
+    %% TODO: handle subscribe errors
+    {ok, _, _} = emqtt:subscribe(ClientPid, ?RESP_TOPIC(Actor), ?QOS_1),
     Res = ?SAFE_MQTT_PUB(
         emqx_cluster_link_mqtt:publish_actor_init_sync(
             ClientPid, ReqId, ?RESP_TOPIC(Actor), TargetCluster, Actor, Incr
@@ -420,7 +434,8 @@ post_actor_init(
     NeedBootstrap
 ) ->
     ok = start_syncer(TargetCluster, Actor, Incr),
-    process_bootstrap(St#st{client = ClientPid}, NeedBootstrap).
+    NSt = schedule_heartbeat(St#st{client = ClientPid}),
+    process_bootstrap(NSt, NeedBootstrap).
 
 handle_connect_error(Reason, St) ->
     ?SLOG(error, #{
@@ -455,6 +470,14 @@ process_bootstrap(St = #st{bootstrapped = true}, NeedBootstrap) ->
             process_bootstrapped(St)
     end.
 
+process_heartbeat(St = #st{client = ClientPid, actor = Actor, incarnation = Incarnation}) ->
+    ok = publish_heartbeat(ClientPid, Actor, Incarnation),
+    schedule_heartbeat(St).
+
+schedule_heartbeat(St = #st{heartbeat_timer = undefined}) ->
+    TRef = erlang:start_timer(?HEARTBEAT_INTERVAL, self(), heartbeat),
+    St#st{heartbeat_timer = TRef}.
+
 %% Bootstrapping.
 %% Responsible for transferring local routing table snapshot to the target
 %% cluster. Does so either during the initial startup or when MQTT connection
@@ -482,7 +505,8 @@ run_bootstrap(Bootstrap, St) ->
             %% TODO: Better error handling.
             case process_bootstrap_batch(Batch, St) of
                 #{} ->
-                    run_bootstrap(NBootstrap, St);
+                    NSt = ensure_bootstrap_heartbeat(St),
+                    run_bootstrap(NBootstrap, NSt);
                 {error, {client, _, _}} ->
                     %% Client has exited, let `reconnect` codepath handle it.
                     St
@@ -495,6 +519,17 @@ process_bootstrapped(St = #st{target = TargetCluster, actor = Actor}) ->
 
 process_bootstrap_batch(Batch, #st{client = ClientPid, actor = Actor, incarnation = Incarnation}) ->
     publish_routes(ClientPid, Actor, Incarnation, Batch).
+
+ensure_bootstrap_heartbeat(St = #st{heartbeat_timer = TRef}) ->
+    case erlang:read_timer(TRef) of
+        false ->
+            ok = emqx_utils:cancel_timer(TRef),
+            process_heartbeat(St);
+        _TimeLeft ->
+            St
+    end.
+
+%%
 
 error_reason({error, Reason}) ->
     Reason;
