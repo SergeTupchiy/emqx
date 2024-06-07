@@ -564,10 +564,10 @@ tcp_keepalive_opts(OS, _Idle, _Interval, _Probes) ->
     {error, {unsupported_os, OS}}.
 
 format(Term) ->
-    iolist_to_binary(io_lib:format("~0p", [Term])).
+    unicode:characters_to_binary(io_lib:format("~0p", [Term])).
 
 format(Fmt, Args) ->
-    iolist_to_binary(io_lib:format(Fmt, Args)).
+    unicode:characters_to_binary(io_lib:format(Fmt, Args)).
 
 -spec call_first_defined(list({module(), atom(), list()})) -> term() | no_return().
 call_first_defined([{Module, Function, Args} | Rest]) ->
